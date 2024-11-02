@@ -1,236 +1,79 @@
-module App
+open Fable.Core.JsInterop
+open Fable.Core
+open Browser.Dom
+open Browser.Types
 
-open System
-open Fable.Remoting.Client
-open Sutil
-open Sutil.DOM
-open Sutil.Bulma
-open Sutil.Attr
-open Sutil.Styling
-open Feliz
-open type Feliz.length
-open Shared.Types
+type Entry = { Name: string; Instrument: string }
 
-module Color =
-  [<Literal>]
-  let lightGrey = "#EEEEEE"
-  
-[<AutoOpen>]
-module SutilOperators =
-  let (|>>) x f =
-    x
-    |> Store.map f
-    |> Store.distinct
-    
-  let (>>==) x f = Bind.fragment x f
-  
-module Bulma =
-  let createElement el className =
-    fun props -> el <| [ class' className ] @ props
+let entries = ResizeArray<Entry>()
+let mutable currentIndex: int option = None
 
-  let navbar = createElement Html.nav "navbar"
-  let level = createElement Html.nav "level"
-  let table = createElement Html.table "table"
+// Function to display entries in the table
+let displayEntries () =
+    let tbody = document.querySelector("#crudTable tbody") :?> HTMLTableSectionElement
+    tbody.innerHTML <- ""
+    entries |> Seq.iteri (fun index entry ->
+        let row = document.createElement("tr") :?> HTMLTableRowElement
+        row.innerHTML <- sprintf "<td>%s</td><td>%s</td>" entry.Name entry.Instrument
+        row.onclick <- fun _ ->
+            let nameInput = document.getElementById("nameInput") :?> HTMLInputElement
+            let instrumentInput = document.getElementById("instrumentInput") :?> HTMLInputElement
+            nameInput.value <- entry.Name
+            instrumentInput.value <- entry.Instrument
+            currentIndex <- Some index
+        tbody.appendChild(row) |> ignore
+    )
 
-  module Navbar =
-    let brand = createElement Html.div "navbar-brand"
-    let item = createElement Html.a "navbar-item"
+// Function to get input values from the HTML form
+let getInputValues () =
+    let nameInput = document.getElementById("nameInput") :?> HTMLInputElement
+    let instrumentInput = document.getElementById("instrumentInput") :?> HTMLInputElement
+    nameInput.value, instrumentInput.value
 
-  module Level =
-    let left = createElement Html.div "level-left"
-    let right = createElement Html.div "level-right"
-    let item = createElement Html.div "level-item"
+// Function to clear the form fields
+let clearForm () =
+    let nameInput = document.getElementById("nameInput") :?> HTMLInputElement
+    let instrumentInput = document.getElementById("instrumentInput") :?> HTMLInputElement
+    nameInput.value <- ""
+    instrumentInput.value <- ""
 
-type PortfolioTab =
-  | Positions
-  | Balances
+// Function to create a new entry
+let createEntry _ =
+    let name, instrument = getInputValues()
+    if name <> "" && instrument <> "" then
+        entries.Add({ Name = name; Instrument = instrument })
+        clearForm()
+        displayEntries ()
 
-type Model =
-  { Portfolio: Portfolio
-    CurrentPortfolioTab: PortfolioTab }
+// Function to update an existing entry
+let updateEntry _ =
+    match currentIndex with
+    | Some idx ->
+        let name, instrument = getInputValues()
+        entries.[idx] <- { Name = name; Instrument = instrument }
+        clearForm()
+        displayEntries ()
+        currentIndex <- None
+    | None -> ()
 
-type Message =
-  | SelectedPaneChanged of PortfolioTab
-  | FetchPortfolio
-  | PortfolioFetched of Portfolio
-  
-  
-let portfolioApi =
-  Remoting.createApi()
-  |> Remoting.withRouteBuilder Route.builder
-  |> Remoting.buildProxy<IPortfolioApi>
-  
-let init (): Model * Cmd<Message> =
-  { Portfolio = { Positions = [] ; Balances = Undefined }
-    CurrentPortfolioTab = Positions }, Cmd.ofMsg FetchPortfolio
+// Function to delete an existing entry
+let deleteEntry _ =
+    match currentIndex with
+    | Some idx ->
+        entries.RemoveAt(idx)
+        clearForm()
+        displayEntries ()
+        currentIndex <- None
+    | None -> ()
 
-let update (msg: Message) (model: Model): Model * Cmd<Message> =
-  match msg with
-  | SelectedPaneChanged portfolioTab ->
-      let model =
-        if portfolioTab <> model.CurrentPortfolioTab then
-          { model with
-              CurrentPortfolioTab = portfolioTab }
-        else
-          model
-          
-      model, Cmd.none
-      
-  | FetchPortfolio ->
-    let msg = async {
-      let! portfolio = portfolioApi.getPortfolio () 
-      return PortfolioFetched portfolio
-    }
-    model, Cmd.OfAsync.result msg
-      
-  | PortfolioFetched portfolio ->
-    { model with Portfolio = portfolio }, Cmd.none
+// Event listeners for buttons
+let initialize () =
+    let createBtn = document.querySelector(".btn-create") :?> HTMLButtonElement
+    let updateBtn = document.querySelector(".btn-update") :?> HTMLButtonElement
+    let deleteBtn = document.querySelector(".btn-delete") :?> HTMLButtonElement
 
-let mainStyleSheet =
-  Sutil.Bulma.withBulmaHelpers [ rule "nav.navbar" [ Css.borderBottom (px 1, borderStyle.solid, Color.lightGrey)]
-                                 rule "div.body" [ Css.height (vh 100) ]
-                                 rule ".full-height" [ Css.height (length.percent 100)]
-                                 rule "span.pnl-percent"
-                                   [ Css.fontSize (length.em 1.1)
-                                     Css.fontWeight 500 ]
+    createBtn.onclick <- createEntry
+    updateBtn.onclick <- updateEntry
+    deleteBtn.onclick <- deleteEntry
 
-                                 rule ".pnl-percent.positive" [ Css.color "green" ]
-                                 rule ".pnl-percent.negative" [ Css.color "red" ]
-                                 rule
-                                   "button.button.selected"
-                                   [ Css.backgroundColor "#6A42B7"
-                                     Css.color "white" ] ]
-
-[<RequireQualifiedAccess>]
-module PnL =
-  let span (PnL percentage) =
-    Html.span [ class' "pnl-percent"
-                if percentage >= 0.m<percent> then
-                  class' "positive"
-                else
-                  class' "negative"
-
-                Html.text $"""{percentage}{"%"}""" ]
-    
-module Navbar =
-  
-  let section =
-    Bulma.navbar [ Bulma.Navbar.brand [ Bulma.Navbar.item [ Html.h5 [ Html.text "STONK" ] ] ] ]
-
-module SummaryPage =
-  open Bulma
-
-  let positionsTable (positionsStore: IObservable<PositionInfo list>) =
-    let header =
-      Html.thead [ Html.tr [ Html.th [ Html.text "Symbols" ]
-                             Html.th [ Html.text "Open price" ]
-                             Html.th [ Html.text "Current price" ]
-                             Html.th [ Html.abbr [ attr ("title", "Open quantity") ]
-                                       Html.text "Qty" ]
-                             Html.th [ Html.abbr [ attr ("title", "Open profit and loss") ]
-                                       Html.text "Open PnL" ] ] ]
-
-    let getRowFromPositionInfo (position: PositionInfo) =
-      let openQtyString =
-        position.OpenQty
-        |> ShareQuantity.get 
-        |> string
-        
-      let openPrice =
-        position.AverageOpenPrice
-        |> AverageOpenPrice.get
-        |> string
-        
-      let currentPrice =
-        position.Stock.CurrentPrice
-        |> CurrentStockPrice.get
-        |> string
-        
-      let (PositionOpenPnL (OpenPnL pnl)) =
-        position
-        |> PositionOpenPnL.calculate
-        
-      let symbolText = Stock.getSymbolString position.Stock
-        
-      Html.tr [ Html.td [ Html.text symbolText ]
-                Html.td [ Html.text openPrice ]
-                Html.td [ Html.text currentPrice ]
-                Html.td [ Html.text openQtyString ]
-                Html.td [ PnL.span pnl ] ]
-
-    let rows positions =
-      positions |> List.map getRowFromPositionInfo
-
-    let getTableFromPositions positions = Bulma.table <| header :: rows positions
-
-    positionsStore >>== getTableFromPositions
-
-  let pnlElement (title: string) pnl =
-    Level.item [ bulma.container [ style [ Css.textAlignCenter ]
-                                   Html.h5 [ Html.text title; class' "mb-2" ]
-
-                                   PnL.span pnl ] ]
-
-  let button dispatch portfolioTab isSelectedStore =
-    let tabString = string portfolioTab
-    Level.item [ bulma.button.button [ Html.text tabString
-                                       onClick (fun _ -> dispatch <| SelectedPaneChanged portfolioTab) []
-                                       bindClass isSelectedStore "selected" ] ]
-
-  let level dispatch (selectedPaneStore: IObservable<PortfolioTab>) =
-    
-    let isPositionsSelected = selectedPaneStore |>> ((=) Positions)
-    let isBalancesSelected = selectedPaneStore |>> ((=) Balances)
-
-    level [ Level.left [ button dispatch Positions isPositionsSelected
-                         button dispatch Balances isBalancesSelected ]
-
-            Level.right [ pnlElement "Open PnL" (PnL -3.23m<percent>)
-                          pnlElement "Day PnL" (PnL 3.23m<percent>) ] ]
-
-  let contentView model dispatch =
-
-    let currentTabStore = model |>> (fun m -> m.CurrentPortfolioTab)
-    let portfolioStore = model |>> (fun m -> m.Portfolio)
-
-    let getViewForSelectedPane =
-      function
-      | Positions ->
-          let positionListStore = portfolioStore |>> (fun p -> p.Positions)
-
-          Html.div [ positionsTable positionListStore ]
-          
-      | Balances -> Html.text "Not done yet"
-
-    bulma.section [ Html.div [ style [ Css.backgroundColor Color.lightGrey ]
-                               bulma.container [ class' "p-5"
-
-                                                 Html.h3 [ Html.text "Account summary" ]
-                                                 bulma.container [ class' "pt-5"
-
-                                                                   level dispatch currentTabStore
-                                                                   currentTabStore >>== getViewForSelectedPane ] ] ] ]
-
-module Main =
-  let section model dispatch =
-    Html.div [ class' "full-height"
-      
-               bulma.columns [ class' "full-height"
-      
-                               bulma.column [ column.is2
-                                              style [ Css.backgroundColor Color.lightGrey ] ]
-      
-                               bulma.column [ SummaryPage.contentView model dispatch ] ] ]
-
-let view () =
-  let model, dispatch = Store.makeElmish init update ignore ()
-
-  Html.div [ disposeOnUnmount [ model ]
-
-             class' "body"
-             Navbar.section
-             Main.section model dispatch ]
-  |> withStyle mainStyleSheet
-
-// Start the app
-view () |> mountElement "sutil-app"
+initialize ()
